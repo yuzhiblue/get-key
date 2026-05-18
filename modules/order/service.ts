@@ -82,6 +82,7 @@ export async function createOrder(input: {
     paymentChannel = input.paymentChannel ?? "alipay_h5";
   }
 
+  // 先创建订单
   const order = await createOrderRecord(prisma, {
     orderNo,
     queryToken,
@@ -97,16 +98,29 @@ export async function createOrder(input: {
     paymentChannel,
   });
 
-  return {
-    id: order.id,
-    orderNo: order.orderNo,
-    queryToken: order.queryToken,
-    amount: order.amount,
-    paymentProvider: order.paymentProvider,
-    paymentChannel: order.paymentChannel,
-    paymentStatus: order.paymentStatus,
-    ...(await createPaymentForOrder(order.orderNo, prisma)),
-  };
+  // 尝试创建支付，如果失败则删除订单
+  try {
+    const paymentResult = await createPaymentForOrder(order.orderNo, prisma);
+
+    return {
+      id: order.id,
+      orderNo: order.orderNo,
+      queryToken: order.queryToken,
+      amount: order.amount,
+      paymentProvider: order.paymentProvider,
+      paymentChannel: order.paymentChannel,
+      paymentStatus: order.paymentStatus,
+      ...paymentResult,
+    };
+  } catch (error) {
+    // 支付创建失败，删除订单以保持数据一致性
+    await prisma.order.delete({
+      where: { id: order.id },
+    }).catch(e => logger.error("Failed to delete order after payment creation failed:", e));
+    
+    // 重新抛出原始错误
+    throw error;
+  }
 }
 
 export async function getOrderForQuery(

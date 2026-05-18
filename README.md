@@ -246,6 +246,43 @@ bun run dev
 
 本项目使用了 Prisma ORM 与 Cloudflare D1 数据库，完全遵循 [官方 Prisma + Cloudflare D1 指南](https://www.prisma.io/docs/guides/deployment/cloudflare-d1) 的最佳实践。
 
+### D1 事务限制与解决方案
+
+> [!WARNING]
+> **Cloudflare D1 不完全支持 Prisma 的交互式事务** (`prisma.$transaction(async (tx) => {...})`)
+
+根据 [Cloudflare Workers SDK Issue #2733](https://github.com/cloudflare/workers-sdk/issues/2733)，D1 的事务支持有限，且官方表示暂无计划添加完整的交互式事务支持。
+
+**本项目的解决方案：补偿性事务（Compensating Transaction）**
+
+在需要保证数据一致性的场景（如订单创建 + 支付初始化），本项目采用以下模式：
+
+```typescript
+// 1. 先执行主操作
+const order = await createOrderRecord(prisma, {...});
+// 2. 尝试执行关联操作
+try {
+  const result = await createPaymentForOrder(order.orderNo, prisma);
+  return result;
+} catch (error) {
+  // 3. 如果失败，执行补偿操作（删除已创建的记录）
+  await prisma.order.delete({ where: { id: order.id } })
+    .catch(e => logger.error("Compensating delete failed:", e));
+  throw error;
+}
+```
+
+**优势：**
+- ✅ 完全兼容 D1 的限制
+- ✅ 不依赖数据库事务特性
+- ✅ 保证数据一致性
+- ✅ 失败时有完整的错误日志
+
+**注意事项：**
+- 补偿删除本身可能失败（极端情况），因此需要日志记录
+- 适用于大多数业务场景，但不适合高并发竞态条件敏感的场景
+- 如需更强的一致性保证，建议在应用层添加额外的状态检查机制
+
 ### 当前运行方式
 
 - `bun dev` 运行在 Cloudflare 风格的本地开发环境中，Prisma 会通过 `env.DB` 连接到**本地 D1 模拟器**。
@@ -272,9 +309,13 @@ bunx prisma migrate diff \
   --script > prisma/migrations/0002_xxx.sql
 ```
 
-说明：
-- `0001_init.sql` 只用于第一次初始化，不应在后续迁移中反复覆盖。
-- 后续迁移请按顺序新增文件，例如 `0002_add_foo.sql`、`0003_add_bar.sql`。
+### 迁移文件限制说明
+
+- **`prisma/migrations/` 中已存在的迁移文件视为历史记录，禁止修改、重命名或删除。**
+- **数据库变更只能通过新增迁移文件完成，例如 `0002_*.sql`、`0003_*.sql`。**
+- **只有在你明确要重建所有数据库，并且不再支持任何旧库升级时，才可以重做迁移历史。**
+- **如果需要修复旧迁移的影响，不要回改旧文件，应该新增补丁迁移或调整部署流程。**
+- **提交前必须保证 `schema.prisma` 与迁移文件的职责一致，避免同一字段在多个迁移里重复定义。**
 
 **第二步：将迁移同步到本地 D1 模拟器（用于本地开发/测试）**
 

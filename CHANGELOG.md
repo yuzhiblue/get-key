@@ -1,5 +1,19 @@
 # Change Log
 
+## v1.3.6 (2026-05-17)
+
+### Improvements
+
+- **email:** 邮件日志列表添加分页功能 ([cd08233](https://github.com/34892002/edgeKey/commit/cd08233))
+- **order:** 优化订单列表状态显示，仅展示订单状态，隐藏支付状态和发货状态，简化界面 ([8eb2cd5](https://github.com/34892002/edgeKey/commit/8eb2cd5))
+- **order:** 完善订单筛选功能，支持按订单状态（待处理、已支付、已发货、已关闭、失败）筛选 ([8eb2cd5](https://github.com/34892002/edgeKey/commit/8eb2cd5))
+- **order:** 完善支付方式筛选器，补充 Stripe ([8eb2cd5](https://github.com/34892002/edgeKey/commit/8eb2cd5))
+
+### Bug Fixes
+
+- **payment:** 修复支付失败但订单已创建的问题 ([961e07b](https://github.com/34892002/edgeKey/commit/961e07b))
+- **database:** 修复数据库迁移问题 ([9d83b78](https://github.com/34892002/edgeKey/commit/9d83b78))
+
 ## v1.3.5 (2026-05-13)
 
 ### Features
