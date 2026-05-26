@@ -20,9 +20,12 @@ EdgeKey 是一套有vike框架开发，可直接部署到 Cloudflare 的一体�
 > [!TIP]
 > **关于 0 成本运行：** 在配合支付渠道（usdt、自建等）、个人邮箱 SMTP 以及免费图床的理想状态下，本项目可实现 **100% 零成本** 运营。
 
-## 技术文档
+## 技术文档 & 资源推荐
 - [一键部署教程](./docs/fast_deploy/start.md)
 - 支付：[BEpusdt](./docs/pay/bepusdt/start.md)、 [易支付](./docs/pay/epay/start.md) 、[支付宝](./docs/pay/alipay/start.md) 、[Stripe](./docs/pay/stripe/start.md)
+- S3存储：[backblaze](https://www.backblaze.com/) 免费提供 10GB 空间免绑卡/手机号验证。本项目已完美适配 Cloudflare（小黄云），接入后流量费全免；未接入 CF 的用户请选用其他 S3 或图床
+- 图床: [91星空图床](https://img.91starry.com/) 免费1G、邮箱注册即用
+- 邮件: [resend](https://resend.com/) 免费用户每日可发 100 封邮件，支持自定义域名发信，免信用卡与手机号验证，开箱即用。
 - [更新日志](./CHANGELOG.md)
 
 ## 项目截图
@@ -195,6 +198,27 @@ UPDATE Admin SET passwordHash = '$2b$10$viMe8RgcpM30gmmF9OpOcuA/QgleSIUk5VRtqjOu
 
 4. 登录后台后立即修改密码
 
+
+## Cloudflare平台操作
+
+### 如何创建数据库
+
+1. 进入 [dash.cloudflare.com](https://dash.cloudflare.com) → **存储和数据库** → **D1 数据库**
+2. 页面右侧点击 **创建数据库** 进入创建 D1 数据库页面
+3. **名称**填写数据库名称，**数据位置**没有特殊需求一般选择 自动...最近的可用区域
+
+#### 如何获取数据库ID
+
+1. 进入 [dash.cloudflare.com](https://dash.cloudflare.com) → **存储和数据库** → **D1 数据库**
+2. 页面右侧会展示你创建的所有数据库
+3. 找到你要操作的数据库名称 比如`edgekey-db` 点击对应的`UUID`即可复制id
+
+### 如何执行SQL
+
+1. 进入 [dash.cloudflare.com](https://dash.cloudflare.com) → **存储和数据库** → **D1 数据库**
+2. 页面右侧会展示你创建的所有数据库，点击你要操作的数据库名称 比如 `edgekey-db`
+3. 点击顶部标签 → **控制台**
+
 ## 本地开发
 
 推荐使用 Bun（也可替换为 npm/pnpm/yarn）。
@@ -222,233 +246,11 @@ bun run db:seed
 # 5. 启动开发服务器
 bun run dev
 ```
-## Cloudflare平台操作
 
-### 如何创建数据库
+### 开发技术文档与规范
 
-1. 进入 [dash.cloudflare.com](https://dash.cloudflare.com) → **存储和数据库** → **D1 数据库**
-2. 页面右侧点击 **创建数据库** 进入创建 D1 数据库页面
-3. **名称**填写数据库名称，**数据位置**没有特殊需求一般选择 自动...最近的可用区域
+[本地开发规范](./docs/development-guide.md)
 
-#### 如何获取数据库ID
-
-1. 进入 [dash.cloudflare.com](https://dash.cloudflare.com) → **存储和数据库** → **D1 数据库**
-2. 页面右侧会展示你创建的所有数据库
-3. 找到你要操作的数据库名称 比如`edgekey-db` 点击对应的`UUID`即可复制id
-
-### 如何执行SQL
-
-1. 进入 [dash.cloudflare.com](https://dash.cloudflare.com) → **存储和数据库** → **D1 数据库**
-2. 页面右侧会展示你创建的所有数据库，点击你要操作的数据库名称 比如 `edgekey-db`
-3. 点击顶部标签 → **控制台**
-
-### Cloudflare D1 + Prisma 本地开发工作流
-
-本项目使用了 Prisma ORM 与 Cloudflare D1 数据库，完全遵循 [官方 Prisma + Cloudflare D1 指南](https://www.prisma.io/docs/guides/deployment/cloudflare-d1) 的最佳实践。
-
-### D1 事务限制与解决方案
-
-> [!WARNING]
-> **Cloudflare D1 不完全支持 Prisma 的交互式事务** (`prisma.$transaction(async (tx) => {...})`)
-
-根据 [Cloudflare Workers SDK Issue #2733](https://github.com/cloudflare/workers-sdk/issues/2733)，D1 的事务支持有限，且官方表示暂无计划添加完整的交互式事务支持。
-
-**本项目的解决方案：补偿性事务（Compensating Transaction）**
-
-在需要保证数据一致性的场景（如订单创建 + 支付初始化），本项目采用以下模式：
-
-```typescript
-// 1. 先执行主操作
-const order = await createOrderRecord(prisma, {...});
-// 2. 尝试执行关联操作
-try {
-  const result = await createPaymentForOrder(order.orderNo, prisma);
-  return result;
-} catch (error) {
-  // 3. 如果失败，执行补偿操作（删除已创建的记录）
-  await prisma.order.delete({ where: { id: order.id } })
-    .catch(e => logger.error("Compensating delete failed:", e));
-  throw error;
-}
-```
-
-**优势：**
-- ✅ 完全兼容 D1 的限制
-- ✅ 不依赖数据库事务特性
-- ✅ 保证数据一致性
-- ✅ 失败时有完整的错误日志
-
-**注意事项：**
-- 补偿删除本身可能失败（极端情况），因此需要日志记录
-- 适用于大多数业务场景，但不适合高并发竞态条件敏感的场景
-- 如需更强的一致性保证，建议在应用层添加额外的状态检查机制
-
-### 当前运行方式
-
-- `bun dev` 运行在 Cloudflare 风格的本地开发环境中，Prisma 会通过 `env.DB` 连接到**本地 D1 模拟器**。
-- `bun run up` 部署后，Prisma 会通过同一个 `env.DB` 绑定连接到**远程 D1**。
-- `.env` 中的 `DATABASE_URL` 仅用于 Prisma CLI / 配置层，不参与当前应用运行时的数据库连接。
-- 当前 `prisma/schema.prisma` 仅保留 Cloudflare client generator，运行时统一使用 `generated/prisma/client`。
-- 因此，本项目当前的数据库运行模式是：**开发环境用本地 D1，生产环境用远程 D1**。
-
-### 正确的数据库开发工作流
-
-当你需要修改数据库表结构时，请**严格按照以下流程执行**：
-
-**第一步：修改 Schema 并生成 SQL 迁移脚本**
-
-修改 `prisma/schema.prisma` 后，不要使用常规的 `migrate dev`，而是使用 `migrate diff` 生成 SQL 脚本：
-
-```bash
-# 由于 Cloudflare D1 和普通的 MySQL 完全不同。普通的 Prisma migrate dev 依赖于一个长期运行的数据库连接来比对状态、创建 shadow database 等等，而 D1 不支持这些操作。
-# 后续增量迁移（修改现有表结构时）
-# 新版 Prisma 已经废弃了 --from-local-d1，推荐使用 --from-migrations
-bunx prisma migrate diff \
-  --from-migrations prisma/migrations \
-  --to-schema prisma/schema.prisma \
-  --script > prisma/migrations/0002_xxx.sql
-```
-
-### 迁移文件限制说明
-
-- **`prisma/migrations/` 中已存在的迁移文件视为历史记录，禁止修改、重命名或删除。**
-- **数据库变更只能通过新增迁移文件完成，例如 `0002_*.sql`、`0003_*.sql`。**
-- **只有在你明确要重建所有数据库，并且不再支持任何旧库升级时，才可以重做迁移历史。**
-- **如果需要修复旧迁移的影响，不要回改旧文件，应该新增补丁迁移或调整部署流程。**
-- **提交前必须保证 `schema.prisma` 与迁移文件的职责一致，避免同一字段在多个迁移里重复定义。**
-
-**第二步：将迁移同步到本地 D1 模拟器（用于本地开发/测试）**
-
-```bash
-bun run db:migrations:local
-```
-
-如果不执行这一步，运行 `bun dev` 访问页面时会报错 `no such table`。
-
-**第三步：将迁移同步到 Cloudflare 线上（发布前）**
-
-```bash
-bun run db:migrations:remote
-```
-
-本地和线上需要分别执行一次。
-
-### 日常开发命令
-
-```bash
-bun dev
-```
-
-上面的命令会启动本地开发服务器，并使用 `wrangler.jsonc` 中定义的 D1 绑定连接到**本地 D1 模拟器**。
-
-### Telefunc 说明
-
-- Telefunc 函数按约定放在对应页面目录下，以 `.telefunc.ts` 结尾。
-- 当前 Windows + `bun dev` + `workerd` 组合下，Telefunc 的开发态命名/同目录检查会触发路径兼容问题，因此在 `server/telefunc-handler.ts` 中关闭了该检查。
-- 这不会影响 Telefunc 的实际加载和调用，只是跳过开发态的命名约定校验。
-
-**⚠️ 绝对不要做的操作：**
-1. **不要**假设 `bun dev` 使用的是 `prisma/db.sqlite`；当前它实际使用的是本地 D1 模拟器。
-2. **不要**使用 `prisma migrate dev`，这会偏离当前 D1 迁移工作流。
-3. **不要**反复覆盖 `prisma/migrations/0001_init.sql`；初始化迁移和后续增量迁移应分开维护。
-4. **不要**信任 Prisma 生成的迁移 SQL，必须手动核查脚本，重点识别并拦截非预期的 **DROP TABLE** 或**全量重建**逻辑，确保迁移过程为增量更新且不覆盖存量数据。
-
-## 技术栈
-
-- 框架与渲染
-  - Vike（文件路由 + SSR）
-  - Vue 3（前端组件）
-- Server / 运行时
-  - Hono（服务端路由与中间件）
-  - Photon（将服务端入口适配到 Cloudflare）
-  - Wrangler（Cloudflare 部署与本地开发工具）
-- 数据与变更
-  - Telefunc（前后端同构的数据变更 RPC）
-  - Prisma（ORM）
-  - D1（Cloudflare 原生 SQLite 数据库，本项目开发与部署统一使用）
-- UI
-  - Tailwind CSS
-  - daisyUI（Tailwind 组件与主题）
-- 认证
-  - Auth.js（管理员账号密码登录）
-
-## 项目结构
-
-```
-.
-├─ assets/                 # 静态资源
-├─ components/             # 复用组件（非路由页面）
-├─ pages/                  # Vike 文件路由目录（页面就近放置组件/样式/类型）
-│  ├─ +config.ts           # 全局配置（例如 title、SSR 等）
-│  ├─ +Layout.vue          # 全局布局
-│  ├─ +Head.vue            # 全局 head 标签
-│  ├─ tailwind.css         # Tailwind + daisyUI 入口
-│  ├─ index/+Page.vue      # 前台首页（/）
-│  ├─ product/+Page.vue    # 商品详情页（/product/:slug）
-│  ├─ query/+Page.vue      # 订单查询页（/query）
-│  ├─ order/+Page.vue      # 订单详情页（/order/:orderNo）
-│  ├─ admin/               # 管理后台（/admin）
-│  └─ _error/+Page.vue     # 错误页
-├─ server/                 # 服务端入口（Hono）与中间件
-│  ├─ entry.ts             # 服务端主入口
-│  ├─ authjs-handler.ts    # Auth.js handler + session middleware
-│  ├─ prisma-middleware.ts # Prisma D1 注入中间件
-│  └─ telefunc-handler.ts  # Telefunc handler
-├─ lib/                    # 业务逻辑库（支付适配器、发货逻辑等）
-├─ modules/                # 功能模块（支付通知、订单等）
-├─ scripts/                # 辅助脚本（种子数据、验证脚本）
-├─ prisma/                 # Prisma Schema 与迁移 SQL
-│  ├─ schema.prisma
-│  └─ migrations/
-│     ├─ 0001_init.sql
-│     └─ 0002_xxx.sql
-├─ vite.config.ts          # Vite 插件配置（vike + vue + tailwind + telefunc）
-├─ wrangler.jsonc          # Cloudflare Workers 配置（入口为 Photon 虚拟模块）
-└─ package.json            # 脚本与依赖
-```
-
-### 关于 `+` 文件（Vike 约定）
-
-`pages/` 目录下以 `+` 开头的文件是 Vike 的"约定接口文件"，用于声明页面、配置与数据加载等；不带 `+` 的文件会被当作普通模块（组件、样式、类型）处理，便于页面就近组织代码。
-
-常见 `+` 文件：
-- `+Page.vue`：页面组件
-- `+data.ts`：页面数据获取（SSR/CSR 共享）
-- `+Layout.vue`：布局（包裹页面）
-- `+Head.vue`：head 标签
-- `+config.ts`：页面/全局配置
-
-## 代码规范
-
-### TypeScript 类型引用规范
-
-所有类型引用**必须在文件顶部使用 `import type` 导入**，禁止在变量声明、函数参数、泛型等位置使用内联 `import()` 写法。
-```typescript
-// bad：禁止内联引用
-function handle(data: import("./types").SomeType) { ... }
-// good：顶部统一导入
-import type { SomeType } from "./types";
-function handle(data: SomeType) { ... }
-```
-
-
-## 日志排查
-
-当邮件发送异常或支付回调出现问题时，可在 Cloudflare Dashboard 查看 Workers 运行日志：
-
-> 实时线上环境日志: bunx wrangler tail --format pretty
-
-1. 进入 [dash.cloudflare.com](https://dash.cloudflare.com)
-2. 左侧菜单 → **Workers & Pages** → 点击 **edgekey**
-3. 顶部 tab → **Observability**
-4. 在搜索框输入关键词过滤日志，例如：
-   - `email.notify_order_paid.config_failed` — 支付后邮件配置获取失败
-   - `email.send.failed` — 邮件发送失败
-   - `email.order_paid.failed` — 支付成功后发送邮件通知失败
-   - `payment.notify.route_exception` — 支付回调路由异常
-   - `payment.notify.context_missing` — 支付回调缺少数据库上下文
-   - `payment.notify.diagnostic` — 支付回调校验异常诊断（签名错误、金额不匹配等）
-   - `bepusdt.verify_notify` — BEpusdt 回调原始 payload（info 级别）
 
 ## 鸣谢
 
