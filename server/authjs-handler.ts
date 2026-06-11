@@ -7,6 +7,8 @@ import { PrismaClient } from "../generated/prisma/client";
 import { badRequestError, internalServerError, rateLimitError } from "../lib/app-error";
 import { logger } from "../lib/logger";
 import { verifyAdminPassword, hashAdminPassword } from "../modules/auth/crypto";
+import { verifyTotpCode } from "../modules/auth/totp";
+import { getSiteSetting } from "../modules/site/service";
 import { getClientIpFromRequest, TURNSTILE_ACTION, verifyTurnstileToken } from "./turnstile";
 
 const ADMIN_ROLE = "admin" as const;
@@ -29,6 +31,30 @@ function getAuthSecret() {
   }
 
   return secret;
+}
+
+async function resolveAuthUrl(prisma: PrismaClient): Promise<string | undefined> {
+  try {
+    const site = await getSiteSetting(prisma);
+    const siteUrl = site.siteUrl?.trim().replace(/\/+$/, "");
+    if (siteUrl) {
+      return siteUrl;
+    }
+  } catch {
+    // ignore, fallback to default behavior
+  }
+}
+
+function rewriteRequestUrl(request: Request, origin: string): Request {
+  const url = new URL(request.url);
+  const newUrl = `${origin}${url.pathname}${url.search}`;
+  return new Request(newUrl, {
+    method: request.method,
+    headers: request.headers,
+    body: request.body,
+    // @ts-expect-error CF Workers specific
+    duplex: "half",
+  });
 }
 
 function getLoginRateLimitConfig() {
@@ -82,7 +108,7 @@ function isRateLimited(request: Request) {
   return current.count > maxAttempts;
 }
 
-async function findAdminByCredentials(prisma: PrismaClient, username: string, password: string) {
+async function findAdminByCredentials(prisma: PrismaClient, username: string, password: string, twoFactorCode?: string) {
   const admin = await prisma.admin.findUnique({
     where: { username },
   });
@@ -94,6 +120,21 @@ async function findAdminByCredentials(prisma: PrismaClient, username: string, pa
   const valid = await verifyAdminPassword(password, admin.passwordHash);
   if (!valid) {
     return null;
+  }
+
+  if (admin.twoFactorEnabled) {
+    if (!admin.twoFactorSecret) {
+      const err = new CredentialsSignin("双重认证配置异常，请联系管理员");
+      err.code = "two_factor_config_invalid";
+      throw err;
+    }
+
+    const codeValid = await verifyTotpCode({ secret: admin.twoFactorSecret, code: twoFactorCode ?? "" });
+    if (!codeValid) {
+      const err = new CredentialsSignin("请输入正确的双重认证验证码");
+      err.code = twoFactorCode ? "two_factor_invalid" : "two_factor_required";
+      throw err;
+    }
   }
 
   // 旧 SHA-256 哈希自动升级为 bcrypt
@@ -134,18 +175,21 @@ export function createAuthjsConfig(prisma: PrismaClient) {
         credentials: {
           username: { label: "Username", type: "text", placeholder: "admin" },
           password: { label: "Password", type: "password" },
+          twoFactorCode: { label: "Two-factor code", type: "text" },
         },
         async authorize(credentials) {
           const usernameRaw = credentials?.username;
           const passwordRaw = credentials?.password;
+          const twoFactorCodeRaw = credentials?.twoFactorCode;
           const username = typeof usernameRaw === "string" ? usernameRaw.trim() : "";
           const password = typeof passwordRaw === "string" ? passwordRaw : "";
+          const twoFactorCode = typeof twoFactorCodeRaw === "string" ? twoFactorCodeRaw.trim() : "";
 
           if (!username || !password) {
             return null;
           }
 
-          return findAdminByCredentials(prisma, username, password);
+          return findAdminByCredentials(prisma, username, password, twoFactorCode);
         },
       }),
     ],
@@ -203,11 +247,13 @@ export const authjsSessionMiddleware: UniversalMiddleware = enhance(
   async (request, context) => {
     try {
       const authContext = context as unknown as AuthContext;
+      const siteOrigin = await resolveAuthUrl(authContext.prisma);
+      const req = siteOrigin ? rewriteRequestUrl(request, siteOrigin) : request;
       const config = createAuthjsConfig(authContext.prisma);
       return {
         ...authContext,
         // Sets pageContext.session
-        session: await getSession(request, config),
+        session: await getSession(req, config),
       };
     } catch (error) {
       logger.warn(error instanceof Error ? error : new Error(String(error)), {
@@ -261,8 +307,12 @@ export const adminAuthMiddleware: UniversalMiddleware = enhance(
  **/
 export const authjsHandler = enhance(
   async (request, context) => {
-    if (isCredentialsCallbackRequest(request)) {
-      if (isRateLimited(request)) {
+    const authContext = context as unknown as AuthContext;
+    const siteOrigin = await resolveAuthUrl(authContext.prisma);
+    const req = siteOrigin ? rewriteRequestUrl(request, siteOrigin) : request;
+
+    if (isCredentialsCallbackRequest(req)) {
+      if (isRateLimited(req)) {
         const error = rateLimitError("Too Many Requests", "AUTH_RATE_LIMITED");
         return new Response(error.message, {
           status: error.statusCode,
@@ -270,16 +320,16 @@ export const authjsHandler = enhance(
       }
 
       try {
-        await assertTurnstileValid(request);
+        await assertTurnstileValid(req);
       } catch (error) {
         const appError = error instanceof Error ? error : new Error(String(error));
         logger.warn(appError, {
           event: "auth.turnstile.validation_failed",
         });
 
-        const url = new URL(request.url);
+        const url = new URL(req.url);
         const callbackUrl = url.searchParams.get("callbackUrl") || "/admin";
-        const redirectUrl = new URL("/admin/login", url.origin);
+        const redirectUrl = new URL("/admin/login", siteOrigin ?? url.origin);
         redirectUrl.searchParams.set("error", error instanceof Error && "code" in error && typeof (error as { code?: unknown }).code === "string"
           ? String((error as { code?: string }).code)
           : "turnstile_invalid");
@@ -288,8 +338,7 @@ export const authjsHandler = enhance(
       }
     }
 
-    const authContext = context as unknown as AuthContext;
-    return Auth(request, createAuthjsConfig(authContext.prisma));
+    return Auth(req, createAuthjsConfig(authContext.prisma));
   },
   {
     name: "my-app:authjs-handler",

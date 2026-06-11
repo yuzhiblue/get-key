@@ -1,5 +1,22 @@
 # Change Log
 
+## v1.4.4 (2026-06-01)
+
+### Bug Fixes
+
+- **auth:** 修复通过 CDN 反向代理访问时，后台登录重定向被跳转到源站域名的问题，Auth.js 现优先使用站点设置中配置的网站地址
+
+## v1.4.3 (2026-05-26)
+
+### Features
+
+- **security:** 新增后台双重认证，支持身份验证器 App 绑定、QuickChart 二维码、登录 TOTP 校验与遗忘 2FA 恢复说明 ([9aca5c9](https://github.com/34892002/edgeKey/commit/9aca5c9))
+
+### Bug Fixes
+
+- **auth:** 加强后台鉴权相关处理，敏感信息处理 ([c09f2fb](https://github.com/34892002/edgeKey/commit/c09f2fb))
+- **docs:** 修正文档与发布说明勘误 ([1980c7a](https://github.com/34892002/edgeKey/commit/1980c7a))
+
 ## v1.4.1 (2026-05-21)
 
 ### Features

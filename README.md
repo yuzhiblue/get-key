@@ -22,6 +22,7 @@ EdgeKey 是一套有vike框架开发，可直接部署到 Cloudflare 的一体�
 
 ## 技术文档 & 资源推荐
 - [一键部署教程](./docs/fast_deploy/start.md)
+- [CDN加速配置](./docs/cdn/start.md)
 - 支付：[BEpusdt](./docs/pay/bepusdt/start.md)、 [易支付](./docs/pay/epay/start.md) 、[支付宝](./docs/pay/alipay/start.md) 、[Stripe](./docs/pay/stripe/start.md)
 - S3存储：[backblaze](https://www.backblaze.com/) 免费提供 10GB 空间免绑卡/手机号验证。本项目已完美适配 Cloudflare（小黄云），接入后流量费全免；未接入 CF 的用户请选用其他 S3 或图床
 - 图床: [91星空图床](https://img.91starry.com/) 免费1G、邮箱注册即用
@@ -197,6 +198,21 @@ UPDATE Admin SET passwordHash = '$2b$10$viMe8RgcpM30gmmF9OpOcuA/QgleSIUk5VRtqjOu
 ```
 
 4. 登录后台后立即修改密码
+
+### 忘记双重认证验证码？
+
+如果已启用双重认证，但验证器 App 丢失或无法获取验证码，可以在 Cloudflare Dashboard 中通过 D1 Console 临时关闭该管理员账号的双重认证。
+执行以下 SQL [如何执行sql](#如何执行sql)：
+
+```sql
+UPDATE "Admin"
+SET "twoFactorEnabled" = false,
+    "twoFactorSecret" = NULL,
+    "twoFactorEnabledAt" = NULL
+WHERE "username" = 'admin';
+```
+
+关闭后请立即登录后台，前往 **安全设置** 重新绑定身份验证器 App。该操作需要数据库管理权限，仅作为账号恢复手段使用。
 
 
 ## Cloudflare平台操作
