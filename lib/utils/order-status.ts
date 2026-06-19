@@ -47,10 +47,14 @@ export function getPaymentProviderLabel(provider: string) {
       return "易支付";
     case "ALIPAY":
       return "支付宝";
+    case "ALIPAY_FACE":
+      return "支付宝当面付";
     case "STRIPE":
       return "Stripe";
     case "BEPUSDT":
       return "BEpusdt";
+    case "FREE_PAY":
+      return "免费";
     default:
       return provider;
   }
