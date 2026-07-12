@@ -1,5 +1,41 @@
 # Change Log
 
+## v1.4.8 (2026-07-10)
+
+### Features
+
+- **payment:** 新增 HashPay 加密货币支付网关，支持 USDT、USDC、ETH 等多种币种收款
+
+### Bug Fixes
+
+- **payment:** 修复 Telefunc 错误处理将 500 错误伪装为 403 的问题，改为透传原生错误响应
+- **payment:** 修复 HashPay 支付货币写死为 USD 的问题，默认改为 CNY，支持自定义配置
+
+### Documentation
+
+- **docs:** 新增 HashPay 支付接入教程
+
+## v1.4.7 (2026-06-30)
+
+### Features
+
+- **site:** 新增页头/页脚自定义代码注入功能，支持在后台添加统计 JS、Meta 标签、客服插件等自定义代码
+
+### Bug Fixes
+
+- **payment:** 修复 TypeScript 类型错误
+
+## v1.4.6 (2026-06-21)
+
+### Features
+
+- **catalog:** 首页商品列表改为无限滚动加载，每批加载 16 个商品
+- **catalog:** 新增分页查询接口支持分类筛选
+
+### Bug Fixes
+
+- **catalog:** 修复首页商品卡片最多展示12个的问题
+
 ## v1.4.5 (2026-06-16)
 
 ### Features
