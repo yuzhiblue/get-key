@@ -1,7 +1,7 @@
 import { getContext } from "telefunc";
 import type { PaymentProvider } from "../payment/types";
 import type { PrismaClient } from "../../generated/prisma/client";
-import { conflictError, notFoundError } from "../../lib/app-error";
+import { badRequestError, conflictError, notFoundError } from "../../lib/app-error";
 import { validateOrderInput } from "../../lib/validators/order";
 import { getAdminContext, logAdminOperation } from "../auth/service";
 import { getAdminProductById } from "../catalog/service";
@@ -11,6 +11,8 @@ import { closeOrderRecord, createOrderRecord, findOrderById, findOrderWithProduc
 import { generateOrderNo, generateQueryToken } from "./number";
 import { logger } from "../../lib/logger";
 import { validateDiscountCode, calculateDiscount, applyDiscountCode } from "../discount/service";
+import { getSiteSetting } from "../site/service";
+import { getStartOfDay as getStartOfDayUtil } from "../../lib/utils/time";
 
 function getOrderContext() {
   return getContext<{ prisma: PrismaClient }>();
@@ -47,6 +49,7 @@ export async function createOrder(input: {
   contactType: "EMAIL" | "QQ" | "TELEGRAM" | "OTHER";
   contactValue?: string;
   buyerNote?: string;
+  receiverInfo?: string;
   discountCode?: string;
 }) {
   const { prisma } = getOrderContext();
@@ -72,8 +75,19 @@ export async function createOrder(input: {
     }
   }
 
+  // 检查实物库存
+  if ((product.deliveryType === "MANUAL" || product.deliveryType === "EXPRESS") && product.physicalStock != null) {
+    if (product.physicalStock < quantity) {
+      throw conflictError("商品库存不足，请减少购买数量或选择其他商品", "PRODUCT_STOCK_NOT_ENOUGH");
+    }
+  }
+
   if (product.deliveryType === "FIXED_CARD" && !product.fixedDeliveryContent?.trim()) {
     throw conflictError("商品固定发货内容未配置，暂不可购买", "PRODUCT_FIXED_CONTENT_MISSING");
+  }
+
+  if (product.deliveryType === "EXPRESS" && !input.receiverInfo?.trim()) {
+    throw badRequestError("收货信息不能为空", "RECEIVER_INFO_REQUIRED");
   }
 
   const orderNo = generateOrderNo();
@@ -99,6 +113,20 @@ export async function createOrder(input: {
 
   const amount = Math.max(0, originalAmount - discountAmount);
 
+  // 扣减实物库存
+  let physicalStockDeducted = false;
+  if ((product.deliveryType === "MANUAL" || product.deliveryType === "EXPRESS") && product.physicalStock != null) {
+    try {
+      await prisma.product.update({
+        where: { id: product.id, physicalStock: { gte: quantity } },
+        data: { physicalStock: { decrement: quantity } },
+      });
+      physicalStockDeducted = true;
+    } catch {
+      throw conflictError("商品库存不足，请减少购买数量或选择其他商品", "PRODUCT_STOCK_NOT_ENOUGH");
+    }
+  }
+
   // 0 元订单直接标记为已支付并发货，跳过支付流程
   if (amount === 0) {
     const order = await createOrderRecord(prisma, {
@@ -112,6 +140,7 @@ export async function createOrder(input: {
       contactType: input.contactType,
       contactValue,
       buyerNote: input.buyerNote?.trim() || null,
+      receiverInfo: input.receiverInfo?.trim() || null,
       paymentProvider: input.paymentProvider,
       paymentChannel,
       discountCodeId,
@@ -184,6 +213,7 @@ export async function createOrder(input: {
     contactType: input.contactType,
     contactValue,
     buyerNote: input.buyerNote?.trim() || null,
+    receiverInfo: input.receiverInfo?.trim() || null,
     paymentProvider: input.paymentProvider,
     paymentChannel,
     discountCodeId,
@@ -214,6 +244,14 @@ export async function createOrder(input: {
       ...paymentResult,
     };
   } catch (error) {
+    // 恢复实物库存
+    if (physicalStockDeducted && (product.deliveryType === "MANUAL" || product.deliveryType === "EXPRESS") && product.physicalStock != null) {
+      await prisma.product.update({
+        where: { id: product.id },
+        data: { physicalStock: { increment: quantity } },
+      }).catch(e => logger.error("Failed to restore physical stock after order creation failed:", e));
+    }
+
     await prisma.order.delete({
       where: { id: order.id },
     }).catch(e => logger.error("Failed to delete order after payment creation failed:", e));
@@ -255,7 +293,7 @@ export async function getOrderForQuery(
   // notify 与 return 几乎同时到达时，return 这次读取可能正好卡在
   // “订单已支付但异步发货还没写完”的瞬间。这里做一次短暂重查，
   // 优先把最终的 DELIVERED 状态和发货内容返回给页面，避免用户手动刷新。
-  if (order.product.deliveryType !== "MANUAL" && order.paymentStatus === "PAID" && order.deliveryStatus === "NOT_DELIVERED") {
+  if (order.product.deliveryType !== "MANUAL" && order.product.deliveryType !== "EXPRESS" && order.paymentStatus === "PAID" && order.deliveryStatus === "NOT_DELIVERED") {
     for (let index = 0; index < 3; index += 1) {
       await sleep(150);
       const refreshed = await findOrderWithProduct(client, orderNo);
@@ -369,7 +407,39 @@ export async function closeOrder(orderId: number) {
   const adminContext = getAdminContext();
   const { prisma } = adminContext;
   const adminId = Number(adminContext.session?.user?.id);
+
+  // 获取订单信息用于恢复库存
+  const orderWithProduct = await prisma.order.findUnique({
+    where: { id: orderId },
+    select: {
+      productId: true,
+      quantity: true,
+      status: true,
+      paymentStatus: true,
+      product: {
+        select: {
+          deliveryType: true,
+          physicalStock: true,
+        },
+      },
+    },
+  });
+
+  if (!orderWithProduct) {
+    throw notFoundError("订单不存在", "ORDER_NOT_FOUND");
+  }
+
   const order = await closeOrderRecord(prisma, orderId);
+
+  // 恢复实物库存
+  if ((orderWithProduct.product.deliveryType === "MANUAL" || orderWithProduct.product.deliveryType === "EXPRESS") &&
+      orderWithProduct.product.physicalStock != null &&
+      orderWithProduct.status === "PENDING" && orderWithProduct.paymentStatus === "UNPAID") {
+    await prisma.product.update({
+      where: { id: orderWithProduct.productId },
+      data: { physicalStock: { increment: orderWithProduct.quantity } },
+    }).catch(e => logger.error("Failed to restore physical stock on manual order close:", e));
+  }
 
   await logAdminOperation(
     {
@@ -392,8 +462,8 @@ export async function closeOrder(orderId: number) {
 
 export async function getDashboardMetrics(prisma?: PrismaClient) {
   const client = prisma ?? getOrderContext().prisma;
-  const today = new Date();
-  today.setHours(0, 0, 0, 0);
+  const siteSetting = await getSiteSetting(client);
+  const today = getStartOfDayUtil(new Date(), siteSetting.timezone!);
 
   const [todayOrders, paidTodayOrders, productCount, availableCards] = await Promise.all([
     client.order.count({
@@ -457,6 +527,7 @@ export async function getAdminOrderById(id: number, prisma?: PrismaClient) {
     deliveryStatus: order.deliveryStatus,
     contactValue: order.contactValue,
     buyerNote: order.buyerNote,
+    receiverInfo: order.receiverInfo,
     createdAt: order.createdAt.toISOString(),
     paidAt: order.paidAt ? order.paidAt.toISOString() : null,
     deliveredAt: order.deliveredAt ? order.deliveredAt.toISOString() : null,
@@ -531,6 +602,32 @@ export async function autoCloseExpiredOrders(prisma: PrismaClient) {
       closedAt: new Date(),
     },
   });
+
+  // 恢复实物库存
+  const closedOrdersWithProduct = await prisma.order.findMany({
+    where: {
+      id: { in: expiredOrders.map((o) => o.id) },
+    },
+    select: {
+      productId: true,
+      quantity: true,
+      product: {
+        select: {
+          deliveryType: true,
+          physicalStock: true,
+        },
+      },
+    },
+  });
+
+  for (const order of closedOrdersWithProduct) {
+    if ((order.product.deliveryType === "MANUAL" || order.product.deliveryType === "EXPRESS") && order.product.physicalStock != null) {
+      await prisma.product.update({
+        where: { id: order.productId },
+        data: { physicalStock: { increment: order.quantity } },
+      }).catch(e => logger.error("Failed to restore physical stock on order close:", e));
+    }
+  }
 
   // 为每个被关闭的订单写一条 PaymentLog
   await prisma.paymentLog.createMany({

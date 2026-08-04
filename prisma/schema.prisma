@@ -28,6 +28,7 @@ enum ProductDeliveryType {
   CARD_AUTO
   FIXED_CARD
   MANUAL
+  EXPRESS
 }
 
 enum ProductStockMode {
@@ -93,6 +94,7 @@ enum DeliveryRecordType {
   CARD
   FIXED_CARD
   MANUAL
+  EXPRESS
 }
 
 enum DeliveryRecordStatus {
@@ -158,6 +160,7 @@ model SiteSetting {
   orderNotice    String?
   headCode       String?
   footerCode     String?
+  timezone       String?         @default("Asia/Shanghai")
   createdAt      DateTime @default(now())
   updatedAt      DateTime @updatedAt
 }
@@ -188,6 +191,7 @@ model Product {
   fixedDeliveryContent String?
   manualDeliveryHint String?
   stockMode         ProductStockMode    @default(FINITE)
+  physicalStock     Int?
   minBuy            Int                 @default(1)
   maxBuy            Int                 @default(1)
   sort              Int                 @default(0)
@@ -233,6 +237,7 @@ model Order {
   contactType         ContactType     @default(EMAIL)
   contactValue        String?
   buyerNote           String?
+  receiverInfo        String?
   paymentProvider     String
   paymentChannel      String?
   paymentOrderNo      String?
